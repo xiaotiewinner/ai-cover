@@ -15,7 +15,7 @@
  * @package   AICover
  * @author    小铁
  * @version   1.0.0
- * @link      https://www.xiaotiewinner.com/ai-cover
+ * @link      https://www.xiaotiewinner.com/2026/ai-cover-doc.html
  */
 
 if (!defined('__TYPECHO_ROOT_DIR__')) {
@@ -288,7 +288,7 @@ class AICover_Plugin implements Typecho_Plugin_Interface
             '__cloudServerAd',
             null,
             '祝你开心愉快！',
-            _t('<a href="https://www.rainyun.com/xiaotie_" target="_blank" rel="noopener noreferrer">云服务器推荐：2H2G100M 30元/月</a>')
+            _t('<a style="font-weight:bold;color:red;" href="https://www.rainyun.com/xiaotie_" target="_blank" rel="noopener noreferrer">云服务器推荐：2H2G100M 30元/月</a>')
         );
         $cloudAd->input->setAttribute('readonly', 'readonly');
         $form->addInput($cloudAd);

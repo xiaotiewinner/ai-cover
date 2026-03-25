@@ -4,7 +4,7 @@
 
 ---
 
-[详细安装配置教程](https://www.xiaotiewinner.com/ai-cover)
+[详细安装配置教程](https://www.xiaotiewinner.com/2026/ai-cover-doc.html)
 
 ## 功能概览
 
