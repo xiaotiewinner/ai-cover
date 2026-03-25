@@ -1,0 +1,476 @@
+/* AICover Plugin - Admin Styles
+ * 
+ * @author 小铁
+ * @version 1.0.0
+ * @link https://www.xiaotiewinner.com/ai-cover
+ */
+
+/* ═══════════════════════════════════════════════
+   编辑器面板
+═══════════════════════════════════════════════ */
+
+.aicover-panel {
+    margin-top: 20px;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(0,0,0,.06);
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+.aicover-panel__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 18px;
+    background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 100%);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: .3px;
+}
+
+.aicover-badge {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 2px 7px;
+    border-radius: 99px;
+    background: rgba(255,255,255,.15);
+    color: rgba(255,255,255,.8);
+    text-transform: uppercase;
+}
+
+.aicover-panel__body {
+    padding: 18px;
+}
+
+/* ─── 预览区 ─── */
+
+.aicover-preview-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.aicover-preview-box {
+    position: relative;
+    flex: 1;
+    max-width: 600px;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #f8fafc;
+    border: 1px solid #e5e7eb;
+    aspect-ratio: 8 / 3;
+}
+
+.aicover-preview-box img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    transition: opacity .3s;
+}
+
+.aicover-preview-label {
+    position: absolute;
+    bottom: 6px;
+    left: 8px;
+    font-size: 11px;
+    color: #fff;
+    background: rgba(0,0,0,.5);
+    padding: 2px 7px;
+    border-radius: 99px;
+    backdrop-filter: blur(4px);
+}
+
+.aicover-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #b0bec5;
+    gap: 6px;
+    font-size: 12px;
+}
+
+/* ─── 表单字段 ─── */
+
+.aicover-field {
+    margin-bottom: 14px;
+}
+
+.aicover-label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 6px;
+}
+
+.aicover-hint {
+    font-weight: 400;
+    color: #9ca3af;
+    font-size: 12px;
+}
+
+.aicover-textarea {
+    width: 100%;
+    min-height: 64px;
+    padding: 10px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    color: #374151;
+    resize: vertical;
+    background: #f9fafb;
+    transition: border-color .2s, box-shadow .2s;
+    box-sizing: border-box;
+    line-height: 1.6;
+}
+
+.aicover-textarea:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59,130,246,.12);
+    background: #fff;
+}
+
+/* ─── 按钮 ─── */
+
+.aicover-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+
+.aicover-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all .15s;
+    white-space: nowrap;
+    text-decoration: none;
+}
+
+.aicover-btn:disabled {
+    opacity: .55;
+    cursor: not-allowed;
+}
+
+.aicover-btn--primary {
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    color: #fff;
+    box-shadow: 0 1px 3px rgba(37,99,235,.35);
+}
+
+.aicover-btn--primary:hover:not(:disabled) {
+    background: linear-gradient(135deg, #1d4ed8, #1e40af);
+    transform: translateY(-1px);
+    box-shadow: 0 3px 8px rgba(37,99,235,.4);
+}
+
+.aicover-btn--secondary {
+    background: #f1f5f9;
+    color: #475569;
+    border: 1px solid #e2e8f0;
+}
+
+.aicover-btn--secondary:hover:not(:disabled) {
+    background: #e2e8f0;
+    color: #1e293b;
+}
+
+.aicover-btn--ghost {
+    background: transparent;
+    color: #64748b;
+    border: 1px solid #e2e8f0;
+}
+
+.aicover-btn--ghost:hover:not(:disabled) {
+    background: #f8fafc;
+}
+
+.aicover-btn--xs {
+    padding: 4px 10px;
+    font-size: 12px;
+}
+
+/* ─── 状态区 ─── */
+
+.aicover-status {
+    min-height: 0;
+    font-size: 13px;
+    line-height: 1.6;
+    border-radius: 7px;
+    overflow: hidden;
+    transition: all .3s;
+}
+
+.aicover-status:empty { display: none; }
+
+.aicover-status--loading {
+    padding: 12px 16px;
+    background: #eff6ff;
+    color: #1d4ed8;
+    border: 1px solid #bfdbfe;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.aicover-status--success {
+    padding: 12px 16px;
+    background: #f0fdf4;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+}
+
+.aicover-status--error {
+    padding: 12px 16px;
+    background: #fef2f2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+}
+
+.aicover-status--info {
+    padding: 12px 16px;
+    background: #f8fafc;
+    color: #475569;
+    border: 1px solid #e2e8f0;
+}
+
+/* ─── 加载动画 ─── */
+
+.aicover-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #bfdbfe;
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: aicover-spin .7s linear infinite;
+    flex-shrink: 0;
+}
+
+@keyframes aicover-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ─── 进度条 ─── */
+
+.aicover-progress {
+    width: 100%;
+    height: 3px;
+    background: #e5e7eb;
+    border-radius: 99px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+.aicover-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #2563eb, #7c3aed);
+    border-radius: 99px;
+    animation: aicover-progress 2s ease-in-out infinite;
+}
+
+@keyframes aicover-progress {
+    0%   { width: 5%;  margin-left: 0; }
+    50%  { width: 60%; margin-left: 20%; }
+    100% { width: 5%;  margin-left: 95%; }
+}
+
+/* ─── 标题建议列表 ─── */
+
+.aicover-title-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.aicover-title-list li {
+    padding: 8px 12px;
+    border-bottom: 1px solid #f1f5f9;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 13px;
+    color: #374151;
+    transition: background .15s;
+    cursor: default;
+}
+
+.aicover-title-list li:hover {
+    background: #f8fafc;
+}
+
+.aicover-title-list li:last-child { border-bottom: none; }
+
+.aicover-use-title {
+    font-size: 11px;
+    padding: 3px 8px;
+    white-space: nowrap;
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background .15s;
+}
+
+.aicover-use-title:hover { background: #1d4ed8; }
+
+/* ─── 历史记录 ─── */
+
+.aicover-history {
+    margin-top: 16px;
+    border-top: 1px solid #f1f5f9;
+    padding-top: 14px;
+}
+
+.aicover-history__title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: 10px;
+}
+
+.aicover-history__list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.aicover-history__item {
+    display: flex;
+    gap: 10px;
+    padding: 8px;
+    background: #f8fafc;
+    border-radius: 6px;
+    border: 1px solid #f1f5f9;
+    transition: border-color .15s;
+}
+
+.aicover-history__item:hover {
+    border-color: #d1d5db;
+}
+
+.aicover-history__item img {
+    width: 72px;
+    height: 40px;
+    object-fit: cover;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.aicover-history__meta {
+    flex: 1;
+    min-width: 0;
+}
+
+.aicover-history__time {
+    font-size: 11px;
+    color: #9ca3af;
+    margin-bottom: 2px;
+}
+
+.aicover-history__prompt {
+    font-size: 11px;
+    color: #6b7280;
+    word-break: break-all;
+    line-height: 1.4;
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ─── Prompt 预览卡片 ─── */
+
+.aicover-prompt-preview {
+    padding: 12px;
+    background: #1e293b;
+    border-radius: 6px;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: 12px;
+    color: #94a3b8;
+    line-height: 1.7;
+    word-break: break-all;
+    user-select: all;
+}
+
+.aicover-prompt-preview strong {
+    color: #38bdf8;
+}
+
+/* ═══════════════════════════════════════════════
+   后台管理面板
+═══════════════════════════════════════════════ */
+
+.aicover-admin-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.aicover-stat-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 14px 16px;
+    text-align: center;
+}
+
+.aicover-stat-card--action {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    text-align: left;
+}
+
+.aicover-stat-num {
+    font-size: 24px;
+    font-weight: 700;
+    color: #1e293b;
+    margin-bottom: 4px;
+    word-break: break-all;
+}
+
+.aicover-stat-label {
+    font-size: 12px;
+    color: #9ca3af;
+}
+
+/* ─── 响应式 ─── */
+
+@media (max-width: 640px) {
+    .aicover-preview-row {
+        flex-direction: column;
+    }
+    .aicover-actions {
+        flex-direction: column;
+    }
+    .aicover-btn {
+        width: 100%;
+        justify-content: center;
+    }
+    .aicover-history__item img {
+        width: 56px;
+        height: 32px;
+    }
+}
