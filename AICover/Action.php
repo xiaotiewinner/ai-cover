@@ -46,6 +46,27 @@ class AICover_Action extends Typecho_Widget implements Widget_Interface_Do
             case 'test':
                 $this->testApiConnection();
                 return;
+            case 'reply_approve':
+                $this->approveReply();
+                return;
+            case 'reply_reject':
+                $this->rejectReply();
+                return;
+            case 'reply_regenerate':
+                $this->regenerateReply();
+                return;
+            case 'reply_use_suggestion':
+                $this->useSuggestion();
+                return;
+            case 'reply_delete_suggestion':
+                $this->deleteSuggestion();
+                return;
+            case 'reply_test':
+                $this->testReplyProvider();
+                return;
+            case 'reply_consume':
+                $this->consumeReplyQueue();
+                return;
             default:
                 $this->jsonError('未知操作: ' . $do, 400);
         }
@@ -84,6 +105,21 @@ class AICover_Action extends Typecho_Widget implements Widget_Interface_Do
             $this->jsonError('权限不足', 403);
         }
         // CSRF 防护
+        $nonce = trim((string)$this->request->get('nonce', ''));
+        if (!AICover_Plugin::verifyNonce($nonce, (int)$cid)) {
+            $this->jsonError('请求已过期或非法，请刷新页面后重试', 403);
+        }
+    }
+
+    private function checkReplyAdminAuth($cid = 0)
+    {
+        $user = Typecho_Widget::widget('Widget_User');
+        if (!$user || !$user->hasLogin()) {
+            $this->jsonError('请先登录', 401);
+        }
+        if (!$user->pass('administrator', true)) {
+            $this->jsonError('权限不足，仅管理员可操作', 403);
+        }
         $nonce = trim((string)$this->request->get('nonce', ''));
         if (!AICover_Plugin::verifyNonce($nonce, (int)$cid)) {
             $this->jsonError('请求已过期或非法，请刷新页面后重试', 403);
@@ -382,7 +418,10 @@ class AICover_Action extends Typecho_Widget implements Widget_Interface_Do
         // 删除文件
         $fullPath = AICover_Plugin::toAbsolutePath($row['cover_path']);
         if (file_exists($fullPath)) {
-            @unlink($fullPath);
+            $deleted = unlink($fullPath);
+            if (!$deleted) {
+                AICover_Plugin::log('删除封面文件失败: ' . $fullPath);
+            }
         }
 
         // 删除 OG 图
@@ -391,7 +430,10 @@ class AICover_Action extends Typecho_Widget implements Widget_Interface_Do
         foreach (['webp', 'jpg'] as $ext) {
             $ogPath = $dir . '/' . $base . '_og.' . $ext;
             if (file_exists($ogPath)) {
-                @unlink($ogPath);
+                $deleted = unlink($ogPath);
+                if (!$deleted) {
+                    AICover_Plugin::log('删除 OG 文件失败: ' . $ogPath);
+                }
             }
         }
 
@@ -495,4 +537,236 @@ class AICover_Action extends Typecho_Widget implements Widget_Interface_Do
             $this->jsonError($msg);
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  AI 评论回复管理
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * 审核通过回复
+     */
+    public function approveReply()
+    {
+        $this->checkReplyAdminAuth(0);
+
+        if (!class_exists('AICover_Reply_ReplyGenerator')) {
+            $this->jsonError('AI 回复功能类未加载');
+        }
+
+        $id = (int)$this->request->get('id', 0);
+        if (!$id) {
+            $this->jsonError('缺少 ID 参数');
+        }
+
+        $result = AICover_Reply_ReplyGenerator::approveReply($id);
+        if (empty($result['success'])) {
+            $this->json(
+                ['success' => false, 'error' => (string)($result['message'] ?? '审核通过失败')],
+                400
+            );
+        }
+        $this->json($result);
+    }
+
+    /**
+     * 拒绝回复
+     */
+    public function rejectReply()
+    {
+        $this->checkReplyAdminAuth(0);
+
+        if (!class_exists('AICover_Reply_ReplyGenerator')) {
+            $this->jsonError('AI 回复功能类未加载');
+        }
+
+        $id = (int)$this->request->get('id', 0);
+        if (!$id) {
+            $this->jsonError('缺少 ID 参数');
+        }
+
+        $result = AICover_Reply_ReplyGenerator::rejectReply($id);
+        if (empty($result['success'])) {
+            $this->json(
+                ['success' => false, 'error' => (string)($result['message'] ?? '拒绝失败')],
+                400
+            );
+        }
+        $this->json($result);
+    }
+
+    /**
+     * 重新生成回复
+     */
+    public function regenerateReply()
+    {
+        $this->checkReplyAdminAuth(0);
+
+        if (!class_exists('AICover_Reply_ReplyGenerator')) {
+            $this->jsonError('AI 回复功能类未加载');
+        }
+
+        $id = (int)$this->request->get('id', 0);
+        if (!$id) {
+            $this->jsonError('缺少 ID 参数');
+        }
+
+        $result = AICover_Reply_ReplyGenerator::regenerateReply($id);
+        if (empty($result['success'])) {
+            $this->json(
+                ['success' => false, 'error' => (string)($result['message'] ?? '重新生成失败')],
+                400
+            );
+        }
+        $this->json($result);
+    }
+
+    /**
+     * 使用建议作为回复
+     */
+    public function useSuggestion()
+    {
+        $this->checkReplyAdminAuth(0);
+
+        if (!class_exists('AICover_Reply_ReplyGenerator')) {
+            $this->jsonError('AI 回复功能类未加载');
+        }
+
+        $id = (int)$this->request->get('id', 0);
+        if (!$id) {
+            $this->jsonError('缺少必要参数');
+        }
+
+        try {
+            $db = Typecho_Db::get();
+
+            // 获取建议内容
+            $suggestion = $db->fetchRow(
+                $db->select('coid', 'cid', 'suggestion_text')->from('table.aicover_reply_suggestions')
+                    ->where('id = ?', $id)
+                    ->where('is_used = ?', 0)
+            );
+
+            if (!$suggestion) {
+                $this->jsonError('建议不存在或已被使用');
+            }
+
+            // 原子抢占建议，避免重复发布
+            $claimed = $db->query(
+                $db->update('table.aicover_reply_suggestions')
+                    ->rows(['is_used' => 1])
+                    ->where('id = ?', $id)
+                    ->where('is_used = ?', 0)
+            );
+            if ((int)$claimed <= 0) {
+                $this->jsonError('建议已被使用，请刷新列表');
+            }
+
+            $cfg = $this->getOptions();
+
+            // 发布回复
+            $result = AICover_Reply_ReplyGenerator::postReply(
+                [
+                    'coid' => (int)($suggestion['coid'] ?? 0),
+                    'cid' => (int)($suggestion['cid'] ?? 0),
+                    'parent' => (int)($suggestion['coid'] ?? 0)
+                ],
+                $suggestion['suggestion_text'],
+                $cfg
+            );
+
+            if ($result['success']) {
+                $this->json($result);
+            } else {
+                // 发布失败回滚占用状态，允许后续重试
+                $db->query(
+                    $db->update('table.aicover_reply_suggestions')
+                        ->rows(['is_used' => 0])
+                        ->where('id = ?', $id)
+                        ->where('is_used = ?', 1)
+                );
+                $this->json(
+                    ['success' => false, 'error' => (string)($result['message'] ?? '使用建议失败')],
+                    400
+                );
+            }
+
+        } catch (Exception $e) {
+            AICover_Plugin::log('useSuggestion 失败: ' . $e->getMessage());
+            $this->jsonError('操作失败');
+        }
+    }
+
+    /**
+     * 删除建议
+     */
+    public function deleteSuggestion()
+    {
+        $this->checkReplyAdminAuth(0);
+
+        $id = (int)$this->request->get('id', 0);
+        if (!$id) {
+            $this->jsonError('缺少 ID 参数');
+        }
+
+        try {
+            $db = Typecho_Db::get();
+            $db->query(
+                $db->delete('table.aicover_reply_suggestions')
+                    ->where('id = ?', $id)
+            );
+
+            $this->json(['success' => true, 'message' => '已删除']);
+
+        } catch (Exception $e) {
+            AICover_Plugin::log('删除建议失败: ' . $e->getMessage());
+            $this->jsonError('删除失败');
+        }
+    }
+
+    /**
+     * 消费 AI 回复队列
+     * 由 triggerBackgroundConsume 通过 fire-and-forget 请求触发，也可由前端 JS 触发
+     * ignore_user_abort(true) 保证连接关闭（fire-and-forget）后 PHP 仍继续执行完毕
+     */
+    private function consumeReplyQueue()
+    {
+        ignore_user_abort(true);
+        set_time_limit(90);
+
+        $cid = (int)$this->request->get('cid', 0);
+        $processed = 0;
+        if (class_exists('AICover_Reply_HookHandler')) {
+            $processed = AICover_Reply_HookHandler::consumeQueuedJobs(2, $cid);
+        }
+        $this->json(['processed' => $processed, 'success' => true]);
+    }
+
+    /**
+     * 测试回复 AI 提供商连接
+     */
+    public function testReplyProvider()
+    {
+        $this->checkReplyAdminAuth(0);
+
+        if (!class_exists('AICover_Reply_Provider')) {
+            $this->jsonError('AI 回复功能类未加载');
+        }
+
+        $cfg = $this->getOptions();
+
+        $testMessage = "请回复：连接测试成功";
+        $result = AICover_Reply_Provider::generateReply($testMessage, $cfg);
+
+        if ($result !== false) {
+            $this->json([
+                'success' => true,
+                'message' => 'API 连接正常 ✓',
+                'reply' => mb_substr($result, 0, 100)
+            ]);
+        } else {
+            $error = AICover_Reply_Provider::getLastError();
+            $this->jsonError('API 连接失败: ' . $error);
+        }
+    }
+
 }

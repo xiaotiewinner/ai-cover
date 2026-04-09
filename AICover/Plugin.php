@@ -5,6 +5,7 @@
  *  <li>AI 图像生成封面</li>
  *  <li>AI 文章摘要生成</li>
  *  <li>AI 标题优化建议</li>
+ *  <li>AI 评论自动回复（支持自动/人工审核/建议三种模式）</li>
  *  <li>自动从文章内容生成绘图 Prompt</li>
  *  <li>后台封面重新生成</li>
  *  <li>OG 分享图自动合成（封面 + 标题文字水印）</li>
@@ -14,13 +15,21 @@
  *
  * @package   AICover
  * @author    小铁
- * @version   1.0.0
- * @link      https://www.xiaotiewinner.com/2026/ai-cover-doc.html
+ * @version   1.1.5
+ * @link      https://www.xiaotiewinner.com
  */
 
 if (!defined('__TYPECHO_ROOT_DIR__')) {
     exit;
 }
+
+// 预加载 AI 回复相关类，确保在钩子触发时可用
+require_once __DIR__ . '/Reply/HookHandler.php';
+require_once __DIR__ . '/Reply/ReplyGenerator.php';
+require_once __DIR__ . '/Reply/Provider.php';
+require_once __DIR__ . '/Reply/ContextBuilder.php';
+require_once __DIR__ . '/Reply/Filter.php';
+require_once __DIR__ . '/Reply/RateLimiter.php';
 
 class AICover_Plugin implements Typecho_Plugin_Interface
 {
@@ -29,6 +38,7 @@ class AICover_Plugin implements Typecho_Plugin_Interface
      */
     private static $lastError = '';
     private static $historyTableInitialized = false;
+    private static $replyInfrastructureChecked = false;
 
     /**
      * 规范化站内相对路径，确保以 / 开头
@@ -238,6 +248,16 @@ class AICover_Plugin implements Typecho_Plugin_Interface
      */
     public static function activate()
     {
+        // 预加载 AI 回复相关类
+        $replyDir = __DIR__ . '/Reply';
+        if (is_dir($replyDir)) {
+            foreach (['Provider.php', 'ContextBuilder.php', 'Filter.php', 'RateLimiter.php', 'ReplyGenerator.php', 'HookHandler.php'] as $file) {
+                $path = $replyDir . '/' . $file;
+                if (file_exists($path)) {
+                    require_once $path;
+                }
+            }
+        }
 
         // 在文章/页面编辑器底部注入 UI（兼容不同 Typecho 版本 Hook 点）
         Typecho_Plugin::factory('Widget_Contents_Post_Edit')->bottom
@@ -257,11 +277,21 @@ class AICover_Plugin implements Typecho_Plugin_Interface
         Typecho_Plugin::factory('Widget_Archive')->header
             = array('AICover_Plugin', 'renderOGMeta');
 
+        // AI 回复队列消费触发器（页面底部注入 JS，延迟后台 fetch）
+        Typecho_Plugin::factory('Widget_Archive')->footer
+            = array('AICover_Plugin', 'renderReplyQueueConsumer');
+
         // 注册后台动作路由
         Helper::addAction('aicover', 'AICover_Action');
 
         // 添加后台菜单
         Helper::addPanel(1, 'AICover/Panel.php', '封面管理', '查看与管理 AI 生成的封面', 'administrator');
+
+        // 添加 AI 回复管理菜单
+        Helper::addPanel(1, 'AICover/ReplyAdmin.php', 'AI 回复管理', '管理 AI 自动回复的审核队列', 'administrator');
+
+        // 注册 AI 评论回复钩子（兼容不同 Typecho 版本）
+        AICover_Reply_HookHandler::registerHooks();
 
         // 建表
         self::initDatabase();
@@ -276,6 +306,7 @@ class AICover_Plugin implements Typecho_Plugin_Interface
     {
         Helper::removeAction('aicover');
         Helper::removePanel(1, 'AICover/Panel.php');
+        Helper::removePanel(1, 'AICover/ReplyAdmin.php');
         return _t('AICover 插件已禁用');
     }
 
@@ -288,7 +319,7 @@ class AICover_Plugin implements Typecho_Plugin_Interface
             '__cloudServerAd',
             null,
             '祝你开心愉快！',
-            _t('<a style="font-weight:bold;color:red;" href="https://www.rainyun.com/xiaotie_" target="_blank" rel="noopener noreferrer">云服务器推荐：2H2G100M 30元/月</a>')
+            _t('<a style="font-weight:bold;color:red;" href="https://www.xiaotiewinner.com/2025/vps-tuijian.html" target="_blank" rel="noopener noreferrer">云服务器推荐</a>')
         );
         $cloudAd->input->setAttribute('readonly', 'readonly');
         $form->addInput($cloudAd);
@@ -451,6 +482,227 @@ class AICover_Plugin implements Typecho_Plugin_Interface
             _t('TTF/OTF 字体绝对路径，用于 OG 图中文标题渲染。留空则用 GD 内置字体（英文）')
         );
         $form->addInput($ogFont);
+
+        // ═══════════════════════════════════════════════════════════════════
+        //  AI 评论回复设置
+        // ═══════════════════════════════════════════════════════════════════
+
+        $replySection = new Typecho_Widget_Helper_Form_Element_Text(
+            '__replySection',
+            null,
+            '',
+            _t('<h3 style="margin-top:30px;padding-top:20px;border-top:2px solid #e5e7eb;">AI 评论回复设置</h3>')
+        );
+        $replySection->input->setAttribute('style', 'display:none');
+        $form->addInput($replySection);
+
+        // 工作模式
+        $replyMode = new Typecho_Widget_Helper_Form_Element_Radio(
+            'replyMode',
+            array(
+                'off' => '关闭（不使用 AI 回复功能）',
+                'auto' => '自动回复（AI 自动生成并发布回复）',
+                'manual' => '人工审核（AI 生成回复，管理员审核后发布）',
+                'suggest' => '仅建议（AI 在后台生成建议，不自动发布）',
+            ),
+            'off',
+            _t('AI 回复工作模式'),
+            _t('选择 AI 评论回复的工作方式')
+        );
+        $form->addInput($replyMode);
+
+        // AI 回复 API 配置（OpenAI 兼容格式）
+        $replyEndpoint = new Typecho_Widget_Helper_Form_Element_Text(
+            'replyEndpoint', null, '',
+            _t('AI 回复 API 端点'),
+            _t('例如：https://api.deepseek.com、https://dashscope.aliyuncs.com/compatible-mode/v1，不用带后缀')
+        );
+        $form->addInput($replyEndpoint);
+
+        $replyApiKey = new Typecho_Widget_Helper_Form_Element_Text(
+            'replyApiKey', null, '',
+            _t('AI 回复 API Key'),
+            _t('用于生成评论回复的 API 密钥')
+        );
+        $replyApiKey->input->setAttribute('type', 'password');
+        $replyApiKey->input->setAttribute('autocomplete', 'off');
+        $form->addInput($replyApiKey);
+
+        $replyModel = new Typecho_Widget_Helper_Form_Element_Text(
+            'replyModel', null, '',
+            _t('AI 回复模型名称'),
+            _t('例如：deepseek-chat、qwen-turbo、gpt-3.5-turbo、moonshot-v1-8k')
+        );
+        $form->addInput($replyModel);
+
+        $replyTriggerTitle = new Typecho_Widget_Helper_Form_Element_Text(
+            '__replyTriggerTitle',
+            null,
+            '',
+            _t('<h4 style="margin-top:20px;">触发条件设置</h4>')
+        );
+        $replyTriggerTitle->input->setAttribute('style', 'display:none');
+        $form->addInput($replyTriggerTitle);
+
+        $replyToAll = new Typecho_Widget_Helper_Form_Element_Radio(
+            'replyToAll',
+            array('1' => '是', '0' => '否'),
+            '1',
+            _t('回复所有评论'),
+            _t('开启后将回复所有符合条件的评论，关闭则只在包含关键词时回复')
+        );
+        $form->addInput($replyToAll);
+
+        $replyKeywords = new Typecho_Widget_Helper_Form_Element_Textarea(
+            'replyKeywords', null, '',
+            _t('触发关键词'),
+            _t('当评论包含这些关键词时触发回复，每行一个关键词。留空则只回复包含问号的评论')
+        );
+        $form->addInput($replyKeywords);
+
+        $replyFirstLevelOnly = new Typecho_Widget_Helper_Form_Element_Radio(
+            'replyFirstLevelOnly',
+            array('1' => '仅一级评论', '0' => '所有层级'),
+            '0',
+            _t('回复层级限制'),
+            _t('选择只回复一级评论（对文章的直接评论），还是也回复评论的回复')
+        );
+        $form->addInput($replyFirstLevelOnly);
+
+        $replyExcludeAuthors = new Typecho_Widget_Helper_Form_Element_Text(
+            'replyExcludeAuthors', null, '',
+            _t('排除回复的作者'),
+            _t('不回复这些作者的评论，多个用户名用逗号分隔。例如：admin,editor')
+        );
+        $form->addInput($replyExcludeAuthors);
+
+        // 上下文设置
+        $replyContextTitle = new Typecho_Widget_Helper_Form_Element_Text(
+            '__replyContextTitle',
+            null,
+            '',
+            _t('<h4 style="margin-top:20px;">上下文设置</h4>')
+        );
+        $replyContextTitle->input->setAttribute('style', 'display:none');
+        $form->addInput($replyContextTitle);
+
+        $replyIncludeArticle = new Typecho_Widget_Helper_Form_Element_Radio(
+            'replyIncludeArticle',
+            array('1' => '包含', '0' => '不包含'),
+            '1',
+            _t('包含文章内容'),
+            _t('回复生成时是否将文章内容作为上下文')
+        );
+        $form->addInput($replyIncludeArticle);
+
+        $replyIncludeParent = new Typecho_Widget_Helper_Form_Element_Radio(
+            'replyIncludeParent',
+            array('1' => '包含', '0' => '不包含'),
+            '1',
+            _t('包含父评论'),
+            _t('回复评论的回复时，是否包含上级评论内容作为上下文')
+        );
+        $form->addInput($replyIncludeParent);
+
+        $replyMaxContextLength = new Typecho_Widget_Helper_Form_Element_Text(
+            'replyMaxContextLength', null, '2000',
+            _t('最大上下文长度'),
+            _t('限制发送给 AI 的上下文最大字符数，防止超出模型限制')
+        );
+        $form->addInput($replyMaxContextLength);
+
+        // 安全设置
+        $replySafetyTitle = new Typecho_Widget_Helper_Form_Element_Text(
+            '__replySafetyTitle',
+            null,
+            '',
+            _t('<h4 style="margin-top:20px;">安全与限制设置</h4>')
+        );
+        $replySafetyTitle->input->setAttribute('style', 'display:none');
+        $form->addInput($replySafetyTitle);
+
+        $replyBlockedWords = new Typecho_Widget_Helper_Form_Element_Textarea(
+            'replyBlockedWords', null, '',
+            _t('敏感词列表'),
+            _t('包含这些词的评论不会触发 AI 回复，每行一个词')
+        );
+        $form->addInput($replyBlockedWords);
+
+        $replyMaxPerHour = new Typecho_Widget_Helper_Form_Element_Text(
+            'replyMaxPerHour', null, '10',
+            _t('每小时最大回复数'),
+            _t('限制每小时自动回复的数量，0 表示无限制')
+        );
+        $form->addInput($replyMaxPerHour);
+
+        $replyMaxPerDay = new Typecho_Widget_Helper_Form_Element_Text(
+            'replyMaxPerDay', null, '50',
+            _t('每天最大回复数'),
+            _t('限制每天自动回复的数量，0 表示无限制')
+        );
+        $form->addInput($replyMaxPerDay);
+
+        $replyDelayMin = new Typecho_Widget_Helper_Form_Element_Text(
+            'replyDelayMin', null, '0',
+            _t('最小延迟（秒）'),
+            _t('回复前的最小延迟时间，模拟人工回复')
+        );
+        $form->addInput($replyDelayMin);
+
+        $replyDelayMax = new Typecho_Widget_Helper_Form_Element_Text(
+            'replyDelayMax', null, '30',
+            _t('最大延迟（秒）'),
+            _t('回复前的最大延迟时间，实际延迟在此范围内随机')
+        );
+        $form->addInput($replyDelayMax);
+
+        $replySecret = new Typecho_Widget_Helper_Form_Element_Text(
+            'replySecret', null, self::getReplySecret(),
+            _t('隐私密钥'),
+            _t('用于哈希 IP 地址的密钥，生产环境建议修改为随机字符串')
+        );
+        $form->addInput($replySecret);
+
+        // AI 身份设置
+        $replyIdentityTitle = new Typecho_Widget_Helper_Form_Element_Text(
+            '__replyIdentityTitle',
+            null,
+            '',
+            _t('<h4 style="margin-top:20px;">AI 身份设置</h4>')
+        );
+        $replyIdentityTitle->input->setAttribute('style', 'display:none');
+        $form->addInput($replyIdentityTitle);
+
+        $replyAiName = new Typecho_Widget_Helper_Form_Element_Text(
+            'replyAiName', null, 'AI助手',
+            _t('AI 显示名称'),
+            _t('在回复中显示的 AI 名称')
+        );
+        $form->addInput($replyAiName);
+
+        $replyShowBadge = new Typecho_Widget_Helper_Form_Element_Radio(
+            'replyShowBadge',
+            array('1' => '显示', '0' => '不显示'),
+            '1',
+            _t('显示 AI 回复标识'),
+            _t('是否在 AI 生成的回复旁显示标识')
+        );
+        $form->addInput($replyShowBadge);
+
+        $replySignature = new Typecho_Widget_Helper_Form_Element_Text(
+            'replySignature', null, '—— AI助手',
+            _t('AI 回复签名'),
+            _t('在 AI 回复末尾添加的签名，留空则不添加')
+        );
+        $form->addInput($replySignature);
+
+        $replySystemPrompt = new Typecho_Widget_Helper_Form_Element_Textarea(
+            'replySystemPrompt', null,
+            "你是一位友善的博客评论回复助手。请根据文章内容和评论内容，给出恰当、有建设性的回复。回复应该：\n1. 简洁明了，不超过 200 字\n2. 友善有礼，体现对读者的尊重\n3. 针对评论内容给出实质性回应\n4. 必要时可以提出问题引导进一步讨论\n5. 使用中文回复",
+            _t('AI 角色设定（系统提示词）'),
+            _t('设定 AI 的角色和回复风格')
+        );
+        $form->addInput($replySystemPrompt);
     }
 
     /**
@@ -1737,6 +1989,47 @@ class AICover_Plugin implements Typecho_Plugin_Interface
 HTML;
     }
 
+    /**
+     * 在文章页面底部注入 AI 回复队列消费触发器
+     * JS 立即调用消费端点，完成后若有新回复则自动刷新页面（无需用户手动刷新）
+     */
+    public static function renderReplyQueueConsumer($archive = null)
+    {
+        try {
+            $cfg = Typecho_Widget::widget('Widget_Options')->plugin('AICover');
+            if (empty($cfg->replyMode) || $cfg->replyMode === 'off') {
+                return;
+            }
+        } catch (Exception $e) {
+            return;
+        }
+
+        if (!is_object($archive) || !method_exists($archive, 'is')) {
+            try {
+                $archive = Typecho_Widget::widget('Widget_Archive');
+            } catch (Exception $e) {
+                return;
+            }
+        }
+        if (!is_object($archive) || !method_exists($archive, 'is') || !$archive->is('single')) {
+            return;
+        }
+
+        $cid = (int)$archive->cid;
+        if ($cid <= 0) {
+            return;
+        }
+
+        $actionUrl = Typecho_Common::url('/action/aicover', Helper::options()->index);
+        $flag = 'window.__aicover_cq_' . $cid;
+        // 仅作非 PHP-FPM 环境的兜底静默消费，不刷新页面
+        echo '<script>(function(){'
+            . 'if(' . $flag . ')return;' . $flag . '=1;'
+            . 'fetch("' . $actionUrl . '?do=reply_consume&cid=' . $cid . '",{credentials:"same-origin"})'
+            . '.catch(function(){});'
+            . '})()</script>' . "\n";
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     //  编辑器面板 UI
     // ═══════════════════════════════════════════════════════════════════
@@ -1942,6 +2235,290 @@ HTML;
         } catch (Exception $e) {
             self::log('历史表初始化失败: ' . $e->getMessage());
         }
+
+        // 初始化评论回复相关表
+        self::initReplyTables();
+    }
+
+    /**
+     * 懒初始化 AI 回复基础设施（表结构/索引）
+     * 供运行期调用，避免升级后必须手动停用再启用插件
+     */
+    public static function ensureReplyInfrastructure()
+    {
+        if (self::$replyInfrastructureChecked) {
+            return;
+        }
+        self::$replyInfrastructureChecked = true;
+        self::initDatabase();
+    }
+
+    /**
+     * 获取 AI 回复隐私密钥（为空或弱默认值时返回站点级回退密钥）
+     */
+    public static function getReplySecret($cfg = null)
+    {
+        if ($cfg === null) {
+            try {
+                $cfg = Typecho_Widget::widget('Widget_Options')->plugin('AICover');
+            } catch (Exception $e) {
+                $cfg = (object)array();
+            }
+        }
+
+        $secret = trim((string)($cfg->replySecret ?? ''));
+        if (!self::isWeakReplySecretValue($secret)) {
+            return $secret;
+        }
+
+        $options = Typecho_Widget::widget('Widget_Options');
+        $seed = (string)($options->siteUrl ?? '') . '|' . (string)__TYPECHO_ROOT_DIR__;
+        return hash('sha256', $seed);
+    }
+
+    /**
+     * replySecret 是否为弱值（空或历史默认值）
+     */
+    public static function isWeakReplySecret($cfg = null)
+    {
+        if ($cfg === null) {
+            try {
+                $cfg = Typecho_Widget::widget('Widget_Options')->plugin('AICover');
+            } catch (Exception $e) {
+                $cfg = (object)array();
+            }
+        }
+        return self::isWeakReplySecretValue(trim((string)($cfg->replySecret ?? '')));
+    }
+
+    private static function isWeakReplySecretValue($secret)
+    {
+        return $secret === '' || $secret === 'aicover_default_salt_change_in_production';
+    }
+
+    /**
+     * 初始化评论回复相关数据表
+     */
+    private static function initReplyTables()
+    {
+        $db = Typecho_Db::get();
+        $prefix = $db->getPrefix();
+        $adapter = strtolower((string)$db->getAdapterName());
+
+        // 待审核回复队列表
+        if (strpos($adapter, 'sqlite') !== false) {
+            $queueTable = "CREATE TABLE IF NOT EXISTS `{$prefix}aicover_reply_queue` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+                `coid` INTEGER NOT NULL,
+                `cid` INTEGER NOT NULL,
+                `parent` INTEGER DEFAULT 0,
+                `author` TEXT NOT NULL,
+                `text` TEXT NOT NULL,
+                `ai_reply` TEXT NOT NULL,
+                `status` TEXT NOT NULL DEFAULT 'pending',
+                `created_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `processed_at` TEXT
+            );";
+            $queueIndex = "CREATE INDEX IF NOT EXISTS `{$prefix}aicover_reply_queue_coid`
+                ON `{$prefix}aicover_reply_queue` (`coid`);";
+        } elseif (strpos($adapter, 'pgsql') !== false || strpos($adapter, 'postgres') !== false) {
+            $queueTable = "CREATE TABLE IF NOT EXISTS \"{$prefix}aicover_reply_queue\" (
+                \"id\" SERIAL PRIMARY KEY,
+                \"coid\" INTEGER NOT NULL,
+                \"cid\" INTEGER NOT NULL,
+                \"parent\" INTEGER DEFAULT 0,
+                \"author\" TEXT NOT NULL,
+                \"text\" TEXT NOT NULL,
+                \"ai_reply\" TEXT NOT NULL,
+                \"status\" TEXT NOT NULL DEFAULT 'pending',
+                \"created_at\" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                \"processed_at\" TIMESTAMP
+            );";
+            $queueIndex = "CREATE INDEX IF NOT EXISTS \"{$prefix}aicover_reply_queue_coid\"
+                ON \"{$prefix}aicover_reply_queue\" (\"coid\");";
+        } else {
+            $queueTable = "CREATE TABLE IF NOT EXISTS `{$prefix}aicover_reply_queue` (
+                `id` INT(11) NOT NULL AUTO_INCREMENT,
+                `coid` INT(11) NOT NULL,
+                `cid` INT(11) NOT NULL,
+                `parent` INT(11) DEFAULT 0,
+                `author` VARCHAR(200) NOT NULL,
+                `text` TEXT NOT NULL,
+                `ai_reply` TEXT NOT NULL,
+                `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `processed_at` DATETIME,
+                PRIMARY KEY (`id`),
+                KEY `coid` (`coid`),
+                KEY `cid` (`cid`),
+                KEY `status` (`status`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+            $queueIndex = null;
+        }
+
+        // 回复日志表（用于限流统计）
+        if (strpos($adapter, 'sqlite') !== false) {
+            $logTable = "CREATE TABLE IF NOT EXISTS `{$prefix}aicover_reply_log` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+                `coid` INTEGER NOT NULL,
+                `cid` INTEGER NOT NULL,
+                `ip_hash` TEXT NOT NULL,
+                `event_type` TEXT NOT NULL DEFAULT 'generation',
+                `created_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );";
+            $logIndex = "CREATE INDEX IF NOT EXISTS `{$prefix}aicover_reply_log_time`
+                ON `{$prefix}aicover_reply_log` (`created_at`);";
+        } elseif (strpos($adapter, 'pgsql') !== false || strpos($adapter, 'postgres') !== false) {
+            $logTable = "CREATE TABLE IF NOT EXISTS \"{$prefix}aicover_reply_log\" (
+                \"id\" SERIAL PRIMARY KEY,
+                \"coid\" INTEGER NOT NULL,
+                \"cid\" INTEGER NOT NULL,
+                \"ip_hash\" TEXT NOT NULL,
+                \"event_type\" VARCHAR(20) NOT NULL DEFAULT 'generation',
+                \"created_at\" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );";
+            $logIndex = "CREATE INDEX IF NOT EXISTS \"{$prefix}aicover_reply_log_time\"
+                ON \"{$prefix}aicover_reply_log\" (\"created_at\");";
+        } else {
+            $logTable = "CREATE TABLE IF NOT EXISTS `{$prefix}aicover_reply_log` (
+                `id` INT(11) NOT NULL AUTO_INCREMENT,
+                `coid` INT(11) NOT NULL,
+                `cid` INT(11) NOT NULL,
+                `ip_hash` VARCHAR(64) NOT NULL,
+                `event_type` VARCHAR(20) NOT NULL DEFAULT 'generation',
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`id`),
+                KEY `created_at` (`created_at`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+            $logIndex = null;
+        }
+
+        // 建议表
+        if (strpos($adapter, 'sqlite') !== false) {
+            $suggestTable = "CREATE TABLE IF NOT EXISTS `{$prefix}aicover_reply_suggestions` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+                `coid` INTEGER NOT NULL,
+                `cid` INTEGER NOT NULL,
+                `suggestion_text` TEXT NOT NULL,
+                `is_used` INTEGER DEFAULT 0,
+                `created_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );";
+        } elseif (strpos($adapter, 'pgsql') !== false || strpos($adapter, 'postgres') !== false) {
+            $suggestTable = "CREATE TABLE IF NOT EXISTS \"{$prefix}aicover_reply_suggestions\" (
+                \"id\" SERIAL PRIMARY KEY,
+                \"coid\" INTEGER NOT NULL,
+                \"cid\" INTEGER NOT NULL,
+                \"suggestion_text\" TEXT NOT NULL,
+                \"is_used\" INTEGER DEFAULT 0,
+                \"created_at\" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );";
+        } else {
+            $suggestTable = "CREATE TABLE IF NOT EXISTS `{$prefix}aicover_reply_suggestions` (
+                `id` INT(11) NOT NULL AUTO_INCREMENT,
+                `coid` INT(11) NOT NULL,
+                `cid` INT(11) NOT NULL,
+                `suggestion_text` TEXT NOT NULL,
+                `is_used` TINYINT(1) DEFAULT 0,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`id`),
+                KEY `coid` (`coid`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+        }
+
+        // 异步任务表（前台评论请求中仅入队，后台异步消费）
+        if (strpos($adapter, 'sqlite') !== false) {
+            $jobTable = "CREATE TABLE IF NOT EXISTS `{$prefix}aicover_reply_jobs` (
+                `id` INTEGER PRIMARY KEY AUTOINCREMENT,
+                `coid` INTEGER NOT NULL,
+                `cid` INTEGER NOT NULL,
+                `status` TEXT NOT NULL DEFAULT 'pending',
+                `attempts` INTEGER NOT NULL DEFAULT 0,
+                `payload` TEXT NOT NULL,
+                `last_error` TEXT,
+                `created_at` TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `started_at` TEXT,
+                `processed_at` TEXT
+            );";
+            $jobIndex = "CREATE INDEX IF NOT EXISTS `{$prefix}aicover_reply_jobs_status`
+                ON `{$prefix}aicover_reply_jobs` (`status`, `id`);";
+        } elseif (strpos($adapter, 'pgsql') !== false || strpos($adapter, 'postgres') !== false) {
+            $jobTable = "CREATE TABLE IF NOT EXISTS \"{$prefix}aicover_reply_jobs\" (
+                \"id\" SERIAL PRIMARY KEY,
+                \"coid\" INTEGER NOT NULL,
+                \"cid\" INTEGER NOT NULL,
+                \"status\" VARCHAR(20) NOT NULL DEFAULT 'pending',
+                \"attempts\" INTEGER NOT NULL DEFAULT 0,
+                \"payload\" TEXT NOT NULL,
+                \"last_error\" TEXT,
+                \"created_at\" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                \"started_at\" TIMESTAMP,
+                \"processed_at\" TIMESTAMP
+            );";
+            $jobIndex = "CREATE INDEX IF NOT EXISTS \"{$prefix}aicover_reply_jobs_status\"
+                ON \"{$prefix}aicover_reply_jobs\" (\"status\", \"id\");";
+        } else {
+            $jobTable = "CREATE TABLE IF NOT EXISTS `{$prefix}aicover_reply_jobs` (
+                `id` INT(11) NOT NULL AUTO_INCREMENT,
+                `coid` INT(11) NOT NULL,
+                `cid` INT(11) NOT NULL,
+                `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
+                `attempts` INT(11) NOT NULL DEFAULT 0,
+                `payload` LONGTEXT NOT NULL,
+                `last_error` TEXT,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `started_at` DATETIME,
+                `processed_at` DATETIME,
+                PRIMARY KEY (`id`),
+                KEY `status_id` (`status`, `id`),
+                KEY `coid` (`coid`),
+                KEY `cid` (`cid`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
+            $jobIndex = null;
+        }
+
+        try {
+            $db->query($queueTable);
+            if (!empty($queueIndex)) {
+                $db->query($queueIndex);
+            }
+            $db->query($logTable);
+            if (!empty($logIndex)) {
+                $db->query($logIndex);
+            }
+            $db->query($suggestTable);
+            $db->query($jobTable);
+            if (!empty($jobIndex)) {
+                $db->query($jobIndex);
+            }
+            // 老版本升级补丁：补齐 event_type 字段（失败忽略，RateLimiter 有降级兜底）
+            self::ensureReplyLogEventTypeColumn($db, $prefix, $adapter);
+        } catch (Exception $e) {
+            self::log('评论回复表初始化失败: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * 为历史安装补齐 event_type 字段
+     */
+    private static function ensureReplyLogEventTypeColumn($db, $prefix, $adapter)
+    {
+        try {
+            if (strpos($adapter, 'sqlite') !== false) {
+                // SQLite 旧版本兼容：不存在则添加，存在会抛异常，忽略即可
+                $db->query("ALTER TABLE `{$prefix}aicover_reply_log` ADD COLUMN `event_type` TEXT NOT NULL DEFAULT 'generation';");
+                return;
+            }
+
+            if (strpos($adapter, 'pgsql') !== false || strpos($adapter, 'postgres') !== false) {
+                $db->query("ALTER TABLE \"{$prefix}aicover_reply_log\" ADD COLUMN IF NOT EXISTS \"event_type\" VARCHAR(20) NOT NULL DEFAULT 'generation';");
+                return;
+            }
+
+            // MySQL/MariaDB
+            $db->query("ALTER TABLE `{$prefix}aicover_reply_log` ADD COLUMN `event_type` VARCHAR(20) NOT NULL DEFAULT 'generation';");
+        } catch (Exception $e) {
+            // 已存在或适配器不支持时静默忽略
+        }
     }
 
     public static function saveCoverToPost($cid, $path)
@@ -2034,13 +2611,16 @@ HTML;
         self::$lastError = '';
         $ch = curl_init($url);
         curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_POST           => true,
-            CURLOPT_POSTFIELDS     => $body,
-            CURLOPT_HTTPHEADER     => $headers,
-            CURLOPT_TIMEOUT        => $timeout,
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_RETURNTRANSFER  => true,
+            CURLOPT_POST            => true,
+            CURLOPT_POSTFIELDS      => $body,
+            CURLOPT_HTTPHEADER      => $headers,
+            CURLOPT_CONNECTTIMEOUT  => 10,
+            CURLOPT_TIMEOUT         => $timeout,
+            CURLOPT_SSL_VERIFYPEER  => true,
+            CURLOPT_SSL_VERIFYHOST  => 2,
+            // 带鉴权头时不自动跟随重定向，避免凭据泄漏
+            CURLOPT_FOLLOWLOCATION  => false,
         ]);
         $result = curl_exec($ch);
         if (curl_errno($ch)) {
@@ -2064,10 +2644,13 @@ HTML;
         self::$lastError = '';
         $ch = curl_init($url);
         curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_RETURNTRANSFER  => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_TIMEOUT        => $timeout,
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            // 带鉴权头时不自动跟随重定向，避免凭据泄漏
+            CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_HTTPHEADER     => $headers,
         ]);
         $result = curl_exec($ch);
@@ -2097,5 +2680,21 @@ HTML;
         $logFile = $logDir . '/aicover-' . date('Y-m') . '.log';
         $line    = '[' . date('Y-m-d H:i:s') . ']' . ($cid ? "[CID:{$cid}]" : '') . ' ' . $msg . PHP_EOL;
         @file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
+    }
+}
+
+// 运行期自注册 AI 回复钩子（避免仅依赖 activate 阶段的历史注册缓存）
+if (defined('__TYPECHO_ROOT_DIR__')) {
+    $replyDir = __DIR__ . '/Reply';
+    if (is_dir($replyDir)) {
+        foreach (['Provider.php', 'ContextBuilder.php', 'Filter.php', 'RateLimiter.php', 'ReplyGenerator.php', 'HookHandler.php'] as $file) {
+            $path = $replyDir . '/' . $file;
+            if (file_exists($path)) {
+                require_once $path;
+            }
+        }
+    }
+    if (class_exists('AICover_Reply_HookHandler')) {
+        AICover_Reply_HookHandler::registerHooks();
     }
 }
