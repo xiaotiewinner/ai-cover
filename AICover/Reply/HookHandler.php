@@ -334,29 +334,38 @@ class AICover_Reply_HookHandler
 
     public static function renderCommentBadge($content, $widget)
     {
-        if (!self::$consumerJsInjected) {
-            self::$consumerJsInjected = true;
-            self::injectConsumerJs();
-        }
-
-        $cfg = Typecho_Widget::widget('Widget_Options')->plugin('AICover');
-
-        // 检查是否开启 AI 标识显示
-        if (!($cfg->replyShowBadge ?? '1')) {
+        // 后台页面不注入 JS 也不加标识，避免污染后台 HTML/JSON 输出
+        if (defined('__TYPECHO_ADMIN__') && __TYPECHO_ADMIN__) {
             return $content;
         }
 
-        // 获取当前评论的 coid
-        $coid = self::getWidgetCoid($widget);
-        if (!$coid) {
-            return $content;
-        }
+        try {
+            if (!self::$consumerJsInjected) {
+                self::$consumerJsInjected = true;
+                self::injectConsumerJs();
+            }
 
-        // 检查是否是 AI 生成的评论
-        if (self::isAIGeneratedCommentByCoid($coid)) {
-            $aiName = $cfg->replyAiName ?? 'AI助手';
-            $badge = '<span class="aicover-ai-badge" title="此回复由 ' . htmlspecialchars($aiName) . ' 自动生成">🤖 ' . htmlspecialchars($aiName) . '</span>';
-            $content = $badge . $content;
+            $cfg = Typecho_Widget::widget('Widget_Options')->plugin('AICover');
+
+            // 检查是否开启 AI 标识显示
+            if (!($cfg->replyShowBadge ?? '1')) {
+                return $content;
+            }
+
+            // 获取当前评论的 coid
+            $coid = self::getWidgetCoid($widget);
+            if (!$coid) {
+                return $content;
+            }
+
+            // 检查是否是 AI 生成的评论
+            if (self::isAIGeneratedCommentByCoid($coid)) {
+                $aiName = $cfg->replyAiName ?? 'AI助手';
+                $badge = '<span class="aicover-ai-badge" title="此回复由 ' . htmlspecialchars($aiName) . ' 自动生成">🤖 ' . htmlspecialchars($aiName) . '</span>';
+                $content = $badge . $content;
+            }
+        } catch (Exception $e) {
+            AICover_Plugin::log('renderCommentBadge 异常: ' . $e->getMessage());
         }
 
         return $content;
@@ -368,6 +377,11 @@ class AICover_Reply_HookHandler
      */
     private static function injectConsumerJs()
     {
+        // 后台不输出任何前端脚本
+        if (defined('__TYPECHO_ADMIN__') && __TYPECHO_ADMIN__) {
+            return;
+        }
+
         try {
             $cfg = Typecho_Widget::widget('Widget_Options')->plugin('AICover');
             if (empty($cfg->replyMode) || $cfg->replyMode === 'off') {
